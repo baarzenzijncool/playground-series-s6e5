@@ -10,6 +10,15 @@ COMPOUND_Q75_PIT_LIFE = {
 }
 
 
+def _add_bigrams(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["bi_compound_race"]   = df["compound"] + "__" + df["race"]
+    df["bi_compound_stint"]  = df["compound"] + "__" + df["stint"].astype(str)
+    df["bi_driver_compound"] = df["driver"]   + "__" + df["compound"]
+    df["bi_race_year"]       = df["race"]     + "__" + df["year"].astype(str)
+    return df
+
+
 def clean_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = (
@@ -23,6 +32,7 @@ def clean_columns(df: pd.DataFrame) -> pd.DataFrame:
 def add_static_features(df: pd.DataFrame) -> pd.DataFrame:
     """Features that require no target-level information from training data."""
     df = df.copy()
+    df = _add_bigrams(df)
     rp = df["raceprogress"]
     compound = df["compound"]
 
@@ -84,9 +94,11 @@ def fit_encodings(df: pd.DataFrame, y: pd.Series) -> dict:
     """Learn target encodings and lookup tables from a training split."""
     global_mean = float(y.mean())
 
-    def target_enc(col, k):
-        stats = y.groupby(df[col]).agg(["sum", "count"])
+    def target_enc(series, k):
+        stats = y.groupby(series).agg(["sum", "count"])
         return ((stats["sum"] + global_mean * k) / (stats["count"] + k)).to_dict()
+
+    df_bi = _add_bigrams(df)
 
     # Per-compound laptime_delta q75 (computed on clipped values to match test-time feature)
     laptime_delta_clipped = df["laptime_delta"].clip(-20, 30)
@@ -102,10 +114,14 @@ def fit_encodings(df: pd.DataFrame, y: pd.Series) -> dict:
 
     return {
         "global_mean": global_mean,
-        "driver_enc": target_enc("driver", k=20),
-        "race_enc": target_enc("race", k=10),
-        "year_enc": target_enc("year", k=15),
-        "stint_enc": target_enc("stint", k=10),
+        "driver_enc":             target_enc(df["driver"],                k=20),
+        "race_enc":               target_enc(df["race"],                  k=10),
+        "year_enc":               target_enc(df["year"],                  k=15),
+        "stint_enc":              target_enc(df["stint"],                 k=10),
+        "bi_compound_race_enc":   target_enc(df_bi["bi_compound_race"],   k=10),
+        "bi_compound_stint_enc":  target_enc(df_bi["bi_compound_stint"],  k=10),
+        "bi_driver_compound_enc": target_enc(df_bi["bi_driver_compound"], k=15),
+        "bi_race_year_enc":       target_enc(df_bi["bi_race_year"],       k=5),
         "laptime_q75_by_compound": laptime_q75,
         "race_laps": race_laps,
     }
@@ -117,9 +133,14 @@ def apply_encodings(df: pd.DataFrame, encodings: dict) -> pd.DataFrame:
     gm = encodings["global_mean"]
 
     df["driver_encoded"] = df["driver"].map(encodings["driver_enc"]).fillna(gm)
-    df["race_encoded"] = df["race"].map(encodings["race_enc"]).fillna(gm)
-    df["year_encoded"] = df["year"].map(encodings["year_enc"]).fillna(gm)
-    df["stint_encoded"] = df["stint"].map(encodings["stint_enc"]).fillna(gm)
+    df["race_encoded"]   = df["race"].map(encodings["race_enc"]).fillna(gm)
+    df["year_encoded"]   = df["year"].map(encodings["year_enc"]).fillna(gm)
+    df["stint_encoded"]  = df["stint"].map(encodings["stint_enc"]).fillna(gm)
+
+    df["bi_compound_race_encoded"]   = df["bi_compound_race"].map(encodings["bi_compound_race_enc"]).fillna(gm)
+    df["bi_compound_stint_encoded"]  = df["bi_compound_stint"].map(encodings["bi_compound_stint_enc"]).fillna(gm)
+    df["bi_driver_compound_encoded"] = df["bi_driver_compound"].map(encodings["bi_driver_compound_enc"]).fillna(gm)
+    df["bi_race_year_encoded"]       = df["bi_race_year"].map(encodings["bi_race_year_enc"]).fillna(gm)
 
     laptime_q75 = df["compound"].map(encodings["laptime_q75_by_compound"]).fillna(0)
     df["laptime_delta_above_compound_q75"] = (
@@ -161,8 +182,11 @@ FEATURE_COLS = [
     "year_2023_flag",
     # Compound one-hot
     "compound_soft", "compound_medium", "compound_hard", "compound_intermediate", "compound_wet",
-    # Target encoded
+    # Target encoded — base
     "driver_encoded", "race_encoded", "year_encoded", "stint_encoded",
+    # Target encoded — bigram cross-features
+    "bi_compound_race_encoded", "bi_compound_stint_encoded",
+    "bi_driver_compound_encoded", "bi_race_year_encoded",
     # Race context
     "race_laps_total",
 ]
